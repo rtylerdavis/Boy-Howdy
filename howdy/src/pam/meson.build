@@ -13,7 +13,23 @@ paths_h = configure_file(
 	configuration: pam_module_conf_data
 )
 
-pamdir = get_option('pam_dir') != '' ? get_option('pam_dir') : join_paths(get_option('prefix'), get_option('libdir'), 'security')
+# PAM modules must live in the system security directory (e.g. /usr/lib64/security),
+# NOT under the meson install prefix (which defaults to /usr/local).
+if get_option('pam_dir') != ''
+    pamdir = get_option('pam_dir')
+else
+    # Try pkg-config first (Debian/Ubuntu ship pam.pc with a moduledir variable)
+    pam_pkg = dependency('pam', method: 'pkg-config', required: false)
+    pamdir = ''
+    if pam_pkg.found()
+        pamdir = pam_pkg.get_variable(pkgconfig: 'moduledir', default_value: '')
+    endif
+    if pamdir == ''
+        # Fall back: use the system libdir under /usr, ignoring the meson prefix.
+        # Fedora: /usr/lib64/security, Debian: /usr/lib/x86_64-linux-gnu/security
+        pamdir = '/usr' / get_option('libdir') / 'security'
+    endif
+endif
 
 shared_library(
 	'pam_howdy',

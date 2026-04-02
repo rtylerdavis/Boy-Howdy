@@ -56,10 +56,10 @@ enc_file = paths_factory.user_model_path(user)
 # Known encodings
 encodings = []
 
-# Make the ./models folder if it doesn't already exist
+# Make the ./models folder if it doesn't already exist (mode 700: root-only)
 if not os.path.exists(paths_factory.user_models_dir_path()):
 	print(_("No face model folder found, creating one"))
-	os.makedirs(paths_factory.user_models_dir_path())
+	os.makedirs(paths_factory.user_models_dir_path(), mode=0o700)
 
 # To try read a premade encodings file if it exists
 try:
@@ -211,8 +211,9 @@ insert_model["data"].append(face_encoding.flatten().tolist())
 # Insert full object into the list
 encodings.append(insert_model)
 
-# Save the new encodings to disk
-with open(enc_file, "w") as datafile:
+# Save the new encodings to disk (mode 600: biometric data, root-only)
+fd = os.open(enc_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as datafile:
 	json.dump(encodings, datafile)
 
 # Give let the user know how it went

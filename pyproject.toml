@@ -1,0 +1,48 @@
+[project]
+name = "boy-howdy"
+version = "4.0.0"
+description = "Linux face authentication (Windows Hello style)"
+license = "MIT"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+    { name = "Tyler Davis", email = "tyler@rtylerdavis.us" },
+]
+keywords = ["face-recognition", "authentication", "pam", "linux", "opencv"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: No Input/Output (Daemon)",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+    "Topic :: System :: Systems Administration :: Authentication/Directory",
+]
+
+dependencies = [
+    "numpy",
+    "opencv-python>=4.5.4",
+]
+
+[project.optional-dependencies]
+gtk = [
+    "PyGObject",
+    "elevate",
+]
+
+[project.urls]
+Homepage = "https://github.com/rtylerdavis/Boy-Howdy"
+Repository = "https://github.com/rtylerdavis/Boy-Howdy"
+Issues = "https://github.com/rtylerdavis/Boy-Howdy/issues"
+
+# Boy-Howdy uses meson as its build system, not Python packaging tools.
+# This file declares metadata and dependencies for tooling (dependabot,
+# IDE support, etc.) but is NOT used for pip install. Build with:
+#
+#   meson setup build --prefix=/usr
+#   meson compile -C build
+#   sudo meson install -C build

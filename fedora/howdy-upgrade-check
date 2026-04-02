@@ -1,0 +1,237 @@
+#!/bin/bash
+# howdy-upgrade-check — Detect and clean stale howdy v2.x PAM configuration.
+#
+# Usage:
+#   howdy-upgrade-check          — Scan and report (dry run)
+#   howdy-upgrade-check --fix    — Scan and fix problems
+#
+# Designed to be run before or during upgrade from boltgolt/howdy v2.x to
+# Boy-Howdy v4.x. Also called by the RPM %pretrans scriptlet.
+#
+# What it checks:
+#   1. Stale pam_python.so references in PAM config (can lock users out)
+#   2. Old /lib/security/howdy/ directory (dead code from v2.x)
+#   3. Old dlib-based face models (incompatible with OpenCV DNN)
+#   4. Stale /usr/local/bin/howdy symlink from v2.x manual install
+
+set -euo pipefail
+
+FIX=false
+PROBLEMS=0
+FIXED=0
+
+if [[ "${1:-}" == "--fix" ]]; then
+    FIX=true
+    if [[ $EUID -ne 0 ]]; then
+        echo "Error: --fix requires root." >&2
+        exit 1
+    fi
+fi
+
+warn() {
+    echo "  [!] $1"
+    ((PROBLEMS++)) || true
+}
+
+fixed() {
+    echo "  [+] $1"
+    ((FIXED++)) || true
+}
+
+info() {
+    echo "  [i] $1"
+}
+
+echo "Boy-Howdy upgrade check"
+echo "======================="
+echo ""
+
+# ---- 1. Stale pam_python.so references ----
+echo "Checking PAM configuration..."
+
+PAM_FILES=(
+    /etc/pam.d/system-auth
+    /etc/pam.d/password-auth
+    /etc/pam.d/common-auth
+    /etc/pam.d/login
+    /etc/pam.d/sudo
+    /etc/pam.d/gdm-password
+    /etc/pam.d/sddm
+    /etc/pam.d/polkit-1
+)
+
+# Also check authselect-managed files
+if [[ -d /etc/authselect ]]; then
+    for f in /etc/authselect/system-auth /etc/authselect/password-auth; do
+        [[ -f "$f" ]] && PAM_FILES+=("$f")
+    done
+fi
+
+# Check authselect custom profiles
+for f in /etc/authselect/custom/*/system-auth /etc/authselect/custom/*/password-auth; do
+    [[ -f "$f" ]] && PAM_FILES+=("$f")
+done
+
+STALE_PAM_FOUND=false
+for pam_file in "${PAM_FILES[@]}"; do
+    [[ -f "$pam_file" ]] || continue
+
+    if grep -q "pam_python\.so.*howdy" "$pam_file" 2>/dev/null; then
+        warn "Stale pam_python.so howdy entry in: $pam_file"
+        grep "pam_python\.so.*howdy" "$pam_file" | while read -r line; do
+            echo "       $line"
+        done
+        STALE_PAM_FOUND=true
+
+        if $FIX; then
+            # Comment out the stale line rather than delete it (safer)
+            sed -i 's/^\(.*pam_python\.so.*howdy.*\)$/# REMOVED by howdy-upgrade-check: \1/' "$pam_file"
+            fixed "Commented out stale entry in $pam_file"
+        fi
+    fi
+done
+
+if ! $STALE_PAM_FOUND; then
+    info "No stale pam_python.so entries found"
+fi
+
+echo ""
+
+# ---- 2. Old /lib/security/howdy/ directory ----
+echo "Checking for old howdy v2.x installation..."
+
+OLD_DIRS=(
+    /lib/security/howdy
+    /usr/lib/security/howdy
+    /usr/lib64/security/howdy
+)
+
+for old_dir in "${OLD_DIRS[@]}"; do
+    if [[ -d "$old_dir" ]]; then
+        warn "Old howdy v2.x directory exists: $old_dir"
+        if $FIX; then
+            rm -rf "$old_dir"
+            fixed "Removed $old_dir"
+        fi
+    fi
+done
+
+# Old symlink from v2.x manual install
+if [[ -L /usr/local/bin/howdy ]]; then
+    target="$(readlink -f /usr/local/bin/howdy 2>/dev/null || true)"
+    if [[ "$target" == *"/lib/security/howdy/"* ]] || [[ ! -e "$target" ]]; then
+        warn "Stale v2.x symlink: /usr/local/bin/howdy -> $target"
+        if $FIX; then
+            rm -f /usr/local/bin/howdy
+            fixed "Removed stale symlink /usr/local/bin/howdy"
+        fi
+    fi
+fi
+
+echo ""
+
+# ---- 3. Old dlib face models ----
+echo "Checking face model compatibility..."
+
+MODEL_DIRS=(
+    /etc/howdy/models
+    /usr/share/howdy/models
+)
+
+DLIB_MODELS_FOUND=false
+for model_dir in "${MODEL_DIRS[@]}"; do
+    [[ -d "$model_dir" ]] || continue
+
+    # Check for old dlib model files
+    for dlib_file in "$model_dir"/shape_predictor_*.dat "$model_dir"/mmod_human_face_detector.dat "$model_dir"/dlib_face_recognition_*.dat; do
+        if [[ -f "$dlib_file" ]]; then
+            warn "Old dlib model file: $dlib_file"
+            DLIB_MODELS_FOUND=true
+            if $FIX; then
+                rm -f "$dlib_file"
+                fixed "Removed $dlib_file"
+            fi
+        fi
+    done
+
+    # Check for user face models that need re-enrollment
+    for user_model in "$model_dir"/*.dat; do
+        [[ -f "$user_model" ]] || continue
+        basename="$(basename "$user_model")"
+
+        # Skip dlib model files (already handled above)
+        case "$basename" in
+            shape_predictor_*|mmod_human_face_*|dlib_face_recognition_*) continue ;;
+        esac
+
+        # User face models: check if they contain dlib-format encodings
+        # dlib encodings are 128-dimensional, SFace encodings are different
+        if python3 -c "
+import json, sys
+try:
+    data = json.load(open('$user_model'))
+    if data and 'data' in data[0] and len(data[0]['data']) > 0:
+        # dlib produces 128-element vectors, SFace produces 128-element too
+        # but the value ranges differ. dlib uses small floats (-0.1 to 0.1),
+        # SFace uses larger range. Check for dlib-style small values.
+        enc = data[0]['data'][0]
+        if isinstance(enc, list) and len(enc) == 128:
+            avg_abs = sum(abs(x) for x in enc) / len(enc)
+            if avg_abs < 0.15:
+                sys.exit(1)  # Likely dlib encoding
+except: pass
+sys.exit(0)
+" 2>/dev/null; then
+            : # SFace format, OK
+        else
+            warn "User model may contain old dlib encodings: $user_model"
+            info "User will need to re-enroll: sudo howdy remove all && sudo howdy add"
+        fi
+    done
+done
+
+if ! $DLIB_MODELS_FOUND; then
+    info "No old dlib model files found"
+fi
+
+echo ""
+
+# ---- 4. Old dlib-data directory ----
+OLD_DLIB_DIRS=(
+    /lib/security/howdy/dlib-data
+    /usr/share/howdy/dlib-data
+    /usr/share/boy-howdy/dlib-data
+)
+
+for dlib_dir in "${OLD_DLIB_DIRS[@]}"; do
+    if [[ -d "$dlib_dir" ]]; then
+        warn "Old dlib-data directory: $dlib_dir"
+        if $FIX; then
+            rm -rf "$dlib_dir"
+            fixed "Removed $dlib_dir"
+        fi
+    fi
+done
+
+# ---- Summary ----
+echo "======================="
+if [[ $PROBLEMS -eq 0 ]]; then
+    echo "No upgrade issues found. System is clean."
+    exit 0
+fi
+
+if $FIX; then
+    echo "Found $PROBLEMS issue(s), fixed $FIXED."
+    remaining=$((PROBLEMS - FIXED))
+    if [[ $remaining -gt 0 ]]; then
+        echo ""
+        echo "WARNING: $remaining issue(s) require manual attention (see above)."
+        exit 1
+    fi
+else
+    echo "Found $PROBLEMS issue(s)."
+    echo ""
+    echo "Run with --fix to automatically resolve (requires root):"
+    echo "  sudo howdy-upgrade-check --fix"
+    exit 1
+fi

@@ -1,0 +1,34 @@
+policy_module(boy-howdy, 4.0.0)
+
+########################################
+#
+# Boy-Howdy SELinux policy module
+#
+# Grants display managers (GDM/SDDM) and console login the permissions
+# needed for face authentication via the pam_howdy PAM module:
+#   - Camera (V4L2) device access for face capture
+#   - uinput device access for the enter-key workaround
+#
+
+require {
+    type xdm_t;
+    type login_t;
+    type v4l_device_t;
+    type uinput_device_t;
+    class chr_file { open read write ioctl getattr };
+}
+
+# ---- Camera access (V4L2) ----
+# The PAM module spawns a Python process that opens /dev/video* to capture
+# frames for face detection/recognition via OpenCV.
+
+allow xdm_t v4l_device_t:chr_file { open read write ioctl getattr };
+allow login_t v4l_device_t:chr_file { open read write ioctl getattr };
+
+# ---- uinput access ----
+# When the "input" workaround is enabled (default), the PAM module creates
+# a virtual input device via /dev/uinput to send an Enter keypress that
+# dismisses the password prompt after a successful face match.
+
+allow xdm_t uinput_device_t:chr_file { open read write ioctl getattr };
+allow login_t uinput_device_t:chr_file { open read write ioctl getattr };

@@ -1,0 +1,6 @@
+# Boy-Howdy SELinux file contexts
+# No custom file contexts needed — howdy files use standard system types:
+#   - PAM module: lib_t (installed to /usr/lib64/security/)
+#   - Config: etc_t (installed to /etc/howdy/)
+#   - Python sources: lib_t (installed to /usr/lib64/howdy/)
+#   - User models: etc_t (installed to /etc/howdy/models/)

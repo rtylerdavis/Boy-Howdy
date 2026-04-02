@@ -1,0 +1,31 @@
+# Build the Boy-Howdy SELinux policy module.
+# Requires: selinux-policy-devel (or checkpolicy + semodule_package)
+#
+# Usage:
+#   make -f Makefile.selinux
+#   sudo semodule -i boy-howdy.pp
+#   sudo semodule -r boy-howdy    # to remove
+
+POLICY_NAME = boy-howdy
+
+all: $(POLICY_NAME).pp
+
+$(POLICY_NAME).pp: $(POLICY_NAME).te $(POLICY_NAME).fc $(POLICY_NAME).if
+	@if [ -f /usr/share/selinux/devel/Makefile ]; then \
+		make -f /usr/share/selinux/devel/Makefile $(POLICY_NAME).pp; \
+	else \
+		echo "Building with checkpolicy directly..."; \
+		checkmodule -M -m -o $(POLICY_NAME).mod $(POLICY_NAME).te; \
+		semodule_package -o $(POLICY_NAME).pp -m $(POLICY_NAME).mod -f $(POLICY_NAME).fc; \
+	fi
+
+clean:
+	rm -f $(POLICY_NAME).pp $(POLICY_NAME).mod *.tmp
+
+install: $(POLICY_NAME).pp
+	semodule -i $(POLICY_NAME).pp
+
+remove:
+	semodule -r $(POLICY_NAME)
+
+.PHONY: all clean install remove

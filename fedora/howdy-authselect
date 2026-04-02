@@ -1,0 +1,189 @@
+#!/bin/bash
+# howdy-authselect — Manage Boy-Howdy's authselect integration on Fedora.
+#
+# Usage:
+#   howdy-authselect enable   — Create a custom authselect profile with Boy-Howdy and activate it
+#   howdy-authselect disable  — Revert to the original profile and remove the custom one
+#   howdy-authselect status   — Show whether Boy-Howdy is currently enabled in PAM
+#
+# This script creates a custom authselect profile ("custom/boy-howdy") based on
+# the user's current profile, adding pam_howdy.so as a sufficient auth method
+# before pam_unix.so. All existing features are preserved.
+
+set -euo pipefail
+
+PROFILE_NAME="boy-howdy"
+CUSTOM_DIR="/etc/authselect/custom/${PROFILE_NAME}"
+STATE_FILE="${CUSTOM_DIR}/.howdy-original-profile"
+PAM_LINE="auth        sufficient                                   pam_howdy.so"
+
+usage() {
+    echo "Usage: howdy-authselect {enable|disable|status}"
+    exit 1
+}
+
+require_root() {
+    if [[ $EUID -ne 0 ]]; then
+        echo "Error: This command must be run as root." >&2
+        exit 1
+    fi
+}
+
+# Check if authselect is active on this system
+check_authselect() {
+    if ! command -v authselect &>/dev/null; then
+        echo "Error: authselect is not installed. This script is for Fedora systems." >&2
+        exit 1
+    fi
+    if ! authselect current &>/dev/null; then
+        echo "Error: authselect is not managing PAM on this system." >&2
+        echo "You can enable it with: authselect select local" >&2
+        exit 1
+    fi
+}
+
+# Get the current profile ID (e.g. "local", "sssd", "custom/boy-howdy")
+get_current_profile() {
+    authselect current -r 2>/dev/null | head -1
+}
+
+# Get the currently enabled features as a space-separated list
+get_current_features() {
+    authselect current 2>/dev/null | grep "^- " | sed 's/^- //' | tr '\n' ' '
+}
+
+inject_howdy_line() {
+    local file="$1"
+    [[ -f "$file" ]] || return 0
+
+    # Don't add if already present
+    if grep -q "pam_howdy.so" "$file"; then
+        return 0
+    fi
+
+    # Insert howdy before the first pam_unix.so auth line.
+    # This places face auth before password, same position as pam_fprintd.so.
+    if grep -q "^auth.*pam_unix.so" "$file"; then
+        sed -i "/^auth.*pam_unix.so/i ${PAM_LINE}" "$file"
+    else
+        # Fallback: insert after pam_faildelay.so
+        sed -i "/^auth.*pam_faildelay.so/a ${PAM_LINE}" "$file"
+    fi
+}
+
+cmd_enable() {
+    require_root
+    check_authselect
+
+    local current_profile
+    current_profile="$(get_current_profile)"
+
+    # Already enabled?
+    if [[ "$current_profile" == "custom/${PROFILE_NAME}" ]]; then
+        echo "Boy-Howdy authselect profile is already active."
+        exit 0
+    fi
+
+    local features
+    features="$(get_current_features)"
+
+    echo "Current authselect profile: ${current_profile}"
+    echo "Current features: ${features:-none}"
+
+    # Determine the base profile for copying.
+    # If it's already a custom profile, use it directly; otherwise use the default.
+    local base_profile="$current_profile"
+
+    echo "Creating custom profile '${PROFILE_NAME}' based on '${base_profile}'..."
+
+    # Remove stale custom profile if it exists
+    if [[ -d "$CUSTOM_DIR" ]]; then
+        rm -rf "$CUSTOM_DIR"
+    fi
+
+    # Create the custom profile
+    authselect create-profile "$PROFILE_NAME" -b "$base_profile" --symlink-meta --symlink-dconf --symlink-nsswitch
+
+    # Inject howdy into the auth PAM files
+    for pam_file in "${CUSTOM_DIR}/system-auth" "${CUSTOM_DIR}/password-auth" "${CUSTOM_DIR}/fingerprint-auth"; do
+        inject_howdy_line "$pam_file"
+    done
+
+    # Save the original profile so we can revert later
+    echo "${current_profile}" > "$STATE_FILE"
+    echo "${features}" >> "$STATE_FILE"
+
+    # Activate the new profile with all the same features
+    echo "Activating custom/boy-howdy profile..."
+    # shellcheck disable=SC2086
+    authselect select "custom/${PROFILE_NAME}" ${features} --force
+
+    echo ""
+    echo "Done. Boy-Howdy face authentication is now enabled in PAM."
+    echo "Make sure you have enrolled a face model: sudo howdy add"
+}
+
+cmd_disable() {
+    require_root
+    check_authselect
+
+    local current_profile
+    current_profile="$(get_current_profile)"
+
+    if [[ "$current_profile" != "custom/${PROFILE_NAME}" ]]; then
+        echo "Boy-Howdy authselect profile is not currently active (current: ${current_profile})."
+        exit 0
+    fi
+
+    if [[ ! -f "$STATE_FILE" ]]; then
+        echo "Error: Cannot find original profile info at ${STATE_FILE}." >&2
+        echo "You can manually switch with: authselect select <profile>" >&2
+        exit 1
+    fi
+
+    local original_profile original_features
+    original_profile="$(sed -n '1p' "$STATE_FILE")"
+    original_features="$(sed -n '2p' "$STATE_FILE")"
+
+    echo "Reverting to original profile: ${original_profile}"
+    echo "Restoring features: ${original_features:-none}"
+
+    # Switch back to the original profile
+    # shellcheck disable=SC2086
+    authselect select "${original_profile}" ${original_features} --force
+
+    # Clean up the custom profile
+    rm -rf "$CUSTOM_DIR"
+
+    echo ""
+    echo "Done. Boy-Howdy has been removed from PAM. Original profile restored."
+}
+
+cmd_status() {
+    check_authselect
+
+    local current_profile
+    current_profile="$(get_current_profile)"
+
+    if [[ "$current_profile" == "custom/${PROFILE_NAME}" ]]; then
+        echo "Boy-Howdy is ENABLED in authselect (profile: custom/${PROFILE_NAME})"
+        if grep -q "pam_howdy.so" /etc/authselect/system-auth 2>/dev/null; then
+            echo "pam_howdy.so is present in system-auth"
+        else
+            echo "WARNING: pam_howdy.so not found in system-auth — profile may be corrupted"
+        fi
+    else
+        echo "Boy-Howdy is NOT enabled in authselect (current profile: ${current_profile})"
+        # Check if someone manually added it
+        if grep -q "pam_howdy.so" /etc/pam.d/system-auth 2>/dev/null; then
+            echo "NOTE: pam_howdy.so was found in /etc/pam.d/system-auth (added manually?)"
+        fi
+    fi
+}
+
+case "${1:-}" in
+    enable)  cmd_enable ;;
+    disable) cmd_disable ;;
+    status)  cmd_status ;;
+    *)       usage ;;
+esac

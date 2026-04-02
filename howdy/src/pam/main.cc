@@ -88,9 +88,11 @@ auto howdy_error(int status,
            status);
   }
 
-  // As this function is only called for error status codes, signal an error to
-  // PAM
-  return PAM_AUTH_ERR;
+  // Face auth failed — return PAM_IGNORE so the PAM stack continues as if
+  // this module wasn't present. This is safer than PAM_AUTH_ERR, which would
+  // block authentication if howdy is ever configured as "required" instead of
+  // "sufficient". Face auth failure should never prevent password login.
+  return PAM_IGNORE;
 }
 
 /**
@@ -266,9 +268,19 @@ auto identify(pam_handle_t *pamh, int flags, int argc, const char **argv,
                               COMPARE_PROCESS_PATH, username, nullptr};
   pid_t child_pid;
 
+  // Build a minimal environment for the Python subprocess.
+  // PAM modules run with a stripped environment, so Python can't find
+  // its modules (howdy's own or system site-packages) without help.
+  std::string pythonpath_env =
+      std::string("PYTHONPATH=") + PYTHON_SOURCES_DIR;
+  std::string path_env = "PATH=/usr/local/bin:/usr/bin:/bin";
+  const char *const envp[] = {pythonpath_env.c_str(), path_env.c_str(),
+                               nullptr};
+
   // Start the python subprocess
   if (posix_spawnp(&child_pid, PYTHON_EXECUTABLE_PATH, nullptr, nullptr,
-                   const_cast<char *const *>(args), nullptr) != 0) {
+                   const_cast<char *const *>(args),
+                   const_cast<char *const *>(envp)) != 0) {
     syslog(LOG_ERR, "Can't spawn the howdy process: %s (%d)", strerror(errno),
            errno);
     return PAM_SYSTEM_ERR;
@@ -452,5 +464,7 @@ PAM_EXTERN auto pam_sm_chauthtok(pam_handle_t *pamh, int flags, int argc,
 }
 PAM_EXTERN auto pam_sm_setcred(pam_handle_t *pamh, int flags, int argc,
                                const char **argv) -> int {
-  return PAM_IGNORE;
+  // Return PAM_SUCCESS since this module doesn't manage credentials.
+  // PAM_IGNORE here can confuse applications that expect setcred to match auth.
+  return PAM_SUCCESS;
 }

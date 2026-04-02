@@ -1,0 +1,8 @@
+## <summary>Boy-Howdy face authentication SELinux policy</summary>
+## <desc>
+##   <p>
+##     Policy module for Boy-Howdy Linux face authentication.
+##     Grants display managers and console login access to camera
+##     and uinput devices needed for face recognition via PAM.
+##   </p>
+## </desc>

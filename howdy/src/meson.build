@@ -10,6 +10,10 @@ py_conf.set('data_dir', datadir)
 py = import('python').find_installation(paths_dict.get('python_path'))
 py.dependency()
 
+if py.language_version().version_compare('< 3.12')
+    error('Boy-Howdy requires Python >= 3.12, found ' + py.language_version())
+endif
+
 py_paths = configure_file(
     input: 'paths.py.in',
     output: 'paths.py',
@@ -106,52 +110,9 @@ if not fs.exists(config_path)
     install_data('config.ini', install_dir: confdir, install_mode: 'rwxr--r--', install_tag: 'config')
 endif
 
-install_data('dlib-data/install.sh', 'dlib-data/Readme.md', install_dir: dlibdatadir, install_mode: 'rwxr--r--')
+install_data('model-data/install.sh', install_dir: modeldatadir, install_mode: 'rwxr-xr-x')
 
 install_man('../howdy.1')
-
-# if get_option('fetch_dlib_data')
-#     downloader = find_program('wget')
-#     bunzip2 = find_program('bunzip2')
-
-#     links = [ 
-#         'https://github.com/davisking/dlib-models/raw/master/dlib_face_recognition_resnet_model_v1.dat.bz2',
-#         'https://github.com/davisking/dlib-models/raw/master/mmod_human_face_detector.dat.bz2',
-#         'https://github.com/davisking/dlib-models/raw/master/shape_predictor_5_face_landmarks.dat.bz2'
-#     ]
-
-#     archived_model_files = [
-#         'dlib_face_recognition_resnet_model_v1.dat.bz2',
-#         'shape_predictor_5_face_landmarks.dat.bz2',
-#         'mmod_human_face_detector.dat.bz2'
-#     ]
-
-#     download = run_command(
-#         'download',
-#         links,
-#         output: archived_model_files,
-#         command: [downloader, '-O', '@OUTPUT@', '@INPUT@']
-#     )
-
-#     model_files = [
-#         'dlib_face_recognition_resnet_model_v1.dat',
-#         'shape_predictor_5_face_landmarks.dat',
-#         'mmod_human_face_detector.dat'
-#     ]
-
-#     models = custom_target(
-#         'models',
-#         input: archived_model_files,
-#         output: model_files,
-#         command: [bunzip2, '-k', '@INPUT@'],
-#     )
-
-#     install_data(
-#         model_files,
-#         install_dir: join_paths(get_option('prefix'), get_option('libdir'), 'dlib_models'),
-#     )
-
-# endif
 
 cli_path = join_paths(pysourcesinstalldir, 'cli.py')
 conf_data = configuration_data({ 'script_path': cli_path, 'python_path': py.full_path() })

@@ -14,14 +14,13 @@ import sys
 import os
 import json
 import configparser
-import dlib
 import cv2
 from datetime import timezone, datetime
 import atexit
 import subprocess
 import snapshot
 import numpy as np
-import _thread as thread
+import threading
 import paths_factory
 from recorders.video_capture import VideoCapture
 from i18n import _
@@ -40,26 +39,32 @@ def exit(code=None):
 
 
 def init_detector(lock):
-	"""Start face detector, encoder and predictor in a new thread"""
-	global face_detector, pose_predictor, face_encoder
+	"""Start face detector and recognizer in a new thread"""
+	global face_detector, face_recognizer
 
-	# Test if at lest 1 of the data files is there and abort if it's not
-	if not os.path.isfile(paths_factory.shape_predictor_5_face_landmarks_path()):
-		print(_("Data files have not been downloaded, please run the following commands:"))
-		print("\n\tcd " + paths_factory.dlib_data_dir_path())
+	# Test if model files exist
+	if not os.path.isfile(paths_factory.face_detector_path()):
+		print(_("Model files have not been downloaded, please run the following commands:"))
+		print("\n\tcd " + paths_factory.model_data_dir_path())
 		print("\tsudo ./install.sh\n")
 		lock.release()
 		exit(1)
 
-	# Use the CNN detector if enabled
-	if use_cnn:
-		face_detector = dlib.cnn_face_detection_model_v1(paths_factory.mmod_human_face_detector_path())
-	else:
-		face_detector = dlib.get_frontal_face_detector()
+	# Initialize YuNet face detector
+	face_detector = cv2.FaceDetectorYN.create(
+		paths_factory.face_detector_path(),
+		"",
+		(320, 320),
+		score_threshold=detection_threshold,
+		nms_threshold=0.3,
+		top_k=5000
+	)
 
-	# Start the others regardless
-	pose_predictor = dlib.shape_predictor(paths_factory.shape_predictor_5_face_landmarks_path())
-	face_encoder = dlib.face_recognition_model_v1(paths_factory.dlib_face_recognition_resnet_model_v1_path())
+	# Initialize SFace face recognizer
+	face_recognizer = cv2.FaceRecognizerSF.create(
+		paths_factory.face_recognizer_path(),
+		""
+	)
 
 	# Note the time it took to initialize detectors
 	timings["ll"] = time.time() - timings["ll"]
@@ -74,7 +79,7 @@ def make_snapshot(type):
 		_("Scan time: ") + str(round(time.time() - timings["fr"], 2)) + "s",
 		_("Frames: ") + str(frames) + " (" + str(round(frames / (time.time() - timings["fr"]), 2)) + "FPS)",
 		_("Hostname: ") + os.uname().nodename,
-		_("Best certainty value: ") + str(round(lowest_certainty * 10, 1))
+		_("Best similarity: ") + str(round(best_similarity, 3))
 	])
 
 
@@ -89,7 +94,7 @@ def send_to_ui(type, message):
 
 		# Try to send the message to the auth ui, but it's okay if that fails
 		try:
-			if gtk_proc.poll() is None: # Make sure the gtk_proc is still running before write into the pipe
+			if gtk_proc.poll() is None:
 				gtk_proc.stdin.write(bytearray(message.encode("utf-8")))
 				gtk_proc.stdin.flush()
 		except IOError:
@@ -104,7 +109,7 @@ if len(sys.argv) < 2:
 user = sys.argv[1]
 # The model file contents
 models = []
-# Encoded face models
+# Encoded face models (numpy arrays)
 encodings = []
 # Amount of ignored 100% black frames
 black_tries = 0
@@ -114,19 +119,19 @@ dark_tries = 0
 frames = 0
 # Captured frames for snapshot capture
 snapframes = []
-# Tracks the lowest certainty value in the loop
-lowest_certainty = 10
-# Face recognition/detection instances
+# Tracks the best (highest) cosine similarity in the loop
+best_similarity = 0
+# Face detection/recognition instances
 face_detector = None
-pose_predictor = None
-face_encoder = None
+face_recognizer = None
 
 # Try to load the face model from the models folder
 try:
 	models = json.load(open(paths_factory.user_model_path(user)))
 
 	for model in models:
-		encodings += model["data"]
+		for encoding in model["data"]:
+			encodings.append(np.array(encoding, dtype=np.float32))
 except FileNotFoundError:
 	exit(10)
 
@@ -139,10 +144,10 @@ config = configparser.ConfigParser()
 config.read(paths_factory.config_file_path())
 
 # Get all config values needed
-use_cnn = config.getboolean("core", "use_cnn", fallback=False)
 timeout = config.getint("video", "timeout", fallback=4)
 dark_threshold = config.getfloat("video", "dark_threshold", fallback=50.0)
-video_certainty = config.getfloat("video", "certainty", fallback=3.5) / 10
+video_certainty = config.getfloat("video", "certainty", fallback=0.40)
+detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
 end_report = config.getboolean("debug", "end_report", fallback=False)
 save_failed = config.getboolean("snapshots", "save_failed", fallback=False)
 save_successful = config.getboolean("snapshots", "save_successful", fallback=False)
@@ -165,13 +170,13 @@ send_to_ui("M", _("Starting up..."))
 # Save the time needed to start the script
 timings["in"] = time.time() - timings["st"]
 
-# Import face recognition, takes some time
+# Load face detection/recognition models, takes some time
 timings["ll"] = time.time()
 
 # Start threading and wait for init to finish
-lock = thread.allocate_lock()
+lock = threading.Lock()
 lock.acquire()
-thread.start_new_thread(init_detector, (lock, ))
+threading.Thread(target=init_detector, args=(lock,), daemon=True).start()
 
 # Start video capture on the IR camera
 timings["ic"] = time.time()
@@ -297,86 +302,100 @@ while True:
 			frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
 			gsframe = cv2.rotate(gsframe, cv2.ROTATE_90_CLOCKWISE)
 
-	# Get all faces from that frame as encodings
-	# Upsamples 1 time
-	face_locations = face_detector(gsframe, 1)
-	# Loop through each face
-	for fl in face_locations:
-		if use_cnn:
-			fl = fl.rect
+	# Set the detector input size to match the current frame
+	h, w = frame.shape[:2]
+	face_detector.setInputSize((w, h))
 
-		# Fetch the faces in the image
-		face_landmark = pose_predictor(frame, fl)
-		face_encoding = np.array(face_encoder.compute_face_descriptor(frame, face_landmark, 1))
+	# Detect faces in the frame (YuNet expects BGR input)
+	retval, faces = face_detector.detect(frame)
 
-		# Match this found face against a known face
-		matches = np.linalg.norm(encodings - face_encoding, axis=1)
+	# Skip if no faces detected
+	if faces is None:
+		continue
 
-		# Get best match
-		match_index = np.argmin(matches)
-		match = matches[match_index]
+	# Loop through each detected face
+	for face in faces:
+		# Align and crop the face for recognition
+		aligned_face = face_recognizer.alignCrop(frame, face)
+		# Get the face embedding
+		face_encoding = face_recognizer.feature(aligned_face)
 
-		# Update certainty if we have a new low
-		if lowest_certainty > match:
-			lowest_certainty = match
+		# Compare against each stored encoding using cosine similarity
+		for enc_idx, stored_encoding in enumerate(encodings):
+			similarity = face_recognizer.match(
+				face_encoding, stored_encoding.reshape(1, -1),
+				cv2.FaceRecognizerSF_FR_COSINE
+			)
 
-		# Check if a match that's confident enough
-		if 0 < match < video_certainty:
-			timings["tt"] = time.time() - timings["st"]
-			timings["fl"] = time.time() - timings["fr"]
+			# Update best similarity if this is higher
+			if similarity > best_similarity:
+				best_similarity = similarity
 
-			# If set to true in the config, print debug text
-			if end_report:
-				def print_timing(label, k):
-					"""Helper function to print a timing from the list"""
-					print("  %s: %dms" % (label, round(timings[k] * 1000)))
+			# Check if similarity exceeds our threshold
+			if similarity >= video_certainty:
+				timings["tt"] = time.time() - timings["st"]
+				timings["fl"] = time.time() - timings["fr"]
 
-				# Print a nice timing report
-				print(_("Time spent"))
-				print_timing(_("Starting up"), "in")
-				print(_("  Open cam + load libs: %dms") % (round(max(timings["ll"], timings["ic"]) * 1000, )))
-				print_timing(_("  Opening the camera"), "ic")
-				print_timing(_("  Importing recognition libs"), "ll")
-				print_timing(_("Searching for known face"), "fl")
-				print_timing(_("Total time"), "tt")
+				# Determine which model this encoding belongs to
+				match_index = 0
+				enc_count = 0
+				for mi, model in enumerate(models):
+					enc_count += len(model["data"])
+					if enc_idx < enc_count:
+						match_index = mi
+						break
 
-				print(_("\nResolution"))
-				width = video_capture.fw or 1
-				print(_("  Native: %dx%d") % (height, width))
-				# Save the new size for diagnostics
-				scale_height, scale_width = frame.shape[:2]
-				print(_("  Used: %dx%d") % (scale_height, scale_width))
+				# If set to true in the config, print debug text
+				if end_report:
+					def print_timing(label, k):
+						"""Helper function to print a timing from the list"""
+						print(f"  {label}: {round(timings[k] * 1000)}ms")
 
-				# Show the total number of frames and calculate the FPS by dividing it by the total scan time
-				print(_("\nFrames searched: %d (%.2f fps)") % (frames, frames / timings["fl"]))
-				print(_("Black frames ignored: %d ") % (black_tries, ))
-				print(_("Dark frames ignored: %d ") % (dark_tries, ))
-				print(_("Certainty of winning frame: %.3f") % (match * 10, ))
+					# Print a nice timing report
+					print(_("Time spent"))
+					print_timing(_("Starting up"), "in")
+					print(_("  Open cam + load models: {}ms").format(round(max(timings["ll"], timings["ic"]) * 1000)))
+					print_timing(_("  Opening the camera"), "ic")
+					print_timing(_("  Loading recognition models"), "ll")
+					print_timing(_("Searching for known face"), "fl")
+					print_timing(_("Total time"), "tt")
 
-				print(_("Winning model: %d (\"%s\")") % (match_index, models[match_index]["label"]))
+					print(_("\nResolution"))
+					width = video_capture.fw or 1
+					print(_("  Native: {}x{}").format(height, width))
+					# Save the new size for diagnostics
+					scale_height, scale_width = frame.shape[:2]
+					print(_("  Used: {}x{}").format(scale_height, scale_width))
 
-			# Make snapshot if enabled
-			if save_successful:
-				make_snapshot(_("SUCCESSFUL"))
+					# Show the total number of frames and calculate the FPS by dividing it by the total scan time
+					print(_("Frames searched: {} ({:.2f} fps)").format(frames, frames / timings["fl"]))
+					print(_("Black frames ignored: {} ").format(black_tries))
+					print(_("Dark frames ignored: {} ").format(dark_tries))
+					print(_("Similarity of winning frame: {:.3f}").format(similarity))
 
-			# Run rubberstamps if enabled
-			if config.getboolean("rubberstamps", "enabled", fallback=False):
-				import rubberstamps
+					print(_("Winning model: {} (\"{}\")").format(match_index, models[match_index]["label"]))
 
-				send_to_ui("S", "")
+				# Make snapshot if enabled
+				if save_successful:
+					make_snapshot(_("SUCCESSFUL"))
 
-				if "gtk_proc" not in vars():
-					gtk_proc = None
+				# Run rubberstamps if enabled
+				if config.getboolean("rubberstamps", "enabled", fallback=False):
+					import rubberstamps
 
-				rubberstamps.execute(config, gtk_proc, {
-					"video_capture": video_capture,
-					"face_detector": face_detector,
-					"pose_predictor": pose_predictor,
-					"clahe": clahe
-				})
+					send_to_ui("S", "")
 
-			# End peacefully
-			exit(0)
+					if "gtk_proc" not in vars():
+						gtk_proc = None
+
+					rubberstamps.execute(config, gtk_proc, {
+						"video_capture": video_capture,
+						"face_detector": face_detector,
+						"clahe": clahe
+					})
+
+				# End peacefully
+				exit(0)
 
 	if exposure != -1:
 		# For a strange reason on some cameras (e.g. Lenoxo X1E) setting manual exposure works only after a couple frames

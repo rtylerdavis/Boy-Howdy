@@ -4,7 +4,7 @@ import re
 
 from i18n import _
 
-from importlib.machinery import SourceFileLoader
+import importlib.util
 
 
 class RubberStamp:
@@ -73,7 +73,7 @@ def execute(config, gtk_proc, opencv):
 			continue
 
 		# Parse the rule with regex
-		regex_result = re.search("^(\w+)\s+([\w\.]+)\s+([a-z]+)(.*)?$", rule, re.IGNORECASE)
+		regex_result = re.search(r"^(\w+)\s+([\w\.]+)\s+([a-z]+)(.*)?$", rule, re.IGNORECASE)
 
 		# Error out if the regex did not match (invalid line)
 		if not regex_result:
@@ -88,7 +88,9 @@ def execute(config, gtk_proc, opencv):
 			continue
 
 		# Load the module from file
-		module = SourceFileLoader(type, dir_path + "/" + type + ".py").load_module()
+		spec = importlib.util.spec_from_file_location(type, dir_path + "/" + type + ".py")
+		module = importlib.util.module_from_spec(spec)
+		spec.loader.exec_module(module)
 
 		# Try to get the class with the same name
 		try:
@@ -104,10 +106,9 @@ def execute(config, gtk_proc, opencv):
 		instance.gtk_proc = gtk_proc
 		instance.opencv = opencv
 
-		# Set some opensv shorthands
+		# Set some opencv shorthands
 		instance.video_capture = opencv["video_capture"]
 		instance.face_detector = opencv["face_detector"]
-		instance.pose_predictor = opencv["pose_predictor"]
 		instance.clahe = opencv["clahe"]
 
 		# Parse and set the 2 required options for all rubberstamps

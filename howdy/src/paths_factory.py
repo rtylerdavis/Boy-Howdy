@@ -2,26 +2,21 @@ from pathlib import PurePath
 import paths
 
 models = [
-    "shape_predictor_5_face_landmarks.dat",
-    "mmod_human_face_detector.dat",
-    "dlib_face_recognition_resnet_model_v1.dat",
+    "face_detection_yunet_2023mar.onnx",
+    "face_recognition_sface_2021dec.onnx",
 ]
 
 
-def dlib_data_dir_path() -> str:
-    return str(paths.dlib_data_dir)
+def model_data_dir_path() -> str:
+    return str(paths.model_data_dir)
 
 
-def shape_predictor_5_face_landmarks_path() -> str:
-    return str(paths.dlib_data_dir / models[0])
+def face_detector_path() -> str:
+    return str(paths.model_data_dir / models[0])
 
 
-def mmod_human_face_detector_path() -> str:
-    return str(paths.dlib_data_dir / models[1])
-
-
-def dlib_face_recognition_resnet_model_v1_path() -> str:
-    return str(paths.dlib_data_dir / models[2])
+def face_recognizer_path() -> str:
+    return str(paths.model_data_dir / models[1])
 
 
 def user_model_path(user: str) -> str:

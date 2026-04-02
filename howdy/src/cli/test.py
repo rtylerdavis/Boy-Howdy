@@ -7,7 +7,6 @@ import os
 import json
 import sys
 import time
-import dlib
 import cv2
 import numpy as np
 import paths_factory
@@ -26,7 +25,8 @@ if config.get("video", "recording_plugin", fallback="opencv") != "opencv":
 video_capture = VideoCapture(config)
 
 # Read config values to use in the main loop
-video_certainty = config.getfloat("video", "certainty", fallback=3.5) / 10
+video_certainty = config.getfloat("video", "certainty", fallback=0.40)
+detection_threshold = config.getfloat("video", "detection_threshold", fallback=0.9)
 exposure = config.getint("video", "exposure", fallback=-1)
 dark_threshold = config.getfloat("video", "dark_threshold", fallback=60)
 
@@ -53,17 +53,21 @@ def print_text(line_number, text):
 	cv2.putText(overlay, text, (10, height - 10 - (10 * line_number)), cv2.FONT_HERSHEY_SIMPLEX, .3, (0, 255, 0), 0, cv2.LINE_AA)
 
 
-use_cnn = config.getboolean('core', 'use_cnn', fallback=False)
+# Initialize YuNet face detector
+face_detector = cv2.FaceDetectorYN.create(
+	paths_factory.face_detector_path(),
+	"",
+	(320, 320),
+	score_threshold=detection_threshold,
+	nms_threshold=0.3,
+	top_k=5000
+)
 
-if use_cnn:
-	face_detector = dlib.cnn_face_detection_model_v1(
-		paths_factory.mmod_human_face_detector_path()
-	)
-else:
-	face_detector = dlib.get_frontal_face_detector()
-
-pose_predictor = dlib.shape_predictor(paths_factory.shape_predictor_5_face_landmarks_path())
-face_encoder = dlib.face_recognition_model_v1(paths_factory.dlib_face_recognition_resnet_model_v1_path())
+# Initialize SFace face recognizer
+face_recognizer = cv2.FaceRecognizerSF.create(
+	paths_factory.face_recognizer_path(),
+	""
+)
 
 encodings = []
 models = None
@@ -73,7 +77,8 @@ try:
 	models = json.load(open(paths_factory.user_model_path(user)))
 
 	for model in models:
-		encodings += model["data"]
+		for encoding in model["data"]:
+			encodings.append(np.array(encoding, dtype=np.float32))
 except FileNotFoundError:
 	pass
 
@@ -145,10 +150,10 @@ try:
 			cv2.rectangle(overlay, p1, p2, (0, 200, 0), thickness=cv2.FILLED)
 
 		# Print the statis in the bottom left
-		print_text(0, _("RESOLUTION: %dx%d") % (height, width))
-		print_text(1, _("FPS: %d") % (fps, ))
-		print_text(2, _("FRAMES: %d") % (total_frames, ))
-		print_text(3, _("RECOGNITION: %dms") % (round(rec_tm * 1000), ))
+		print_text(0, _("RESOLUTION: {}x{}").format(height, width))
+		print_text(1, _("FPS: {}").format(fps))
+		print_text(2, _("FRAMES: {}").format(total_frames))
+		print_text(3, _("RECOGNITION: {}ms").format(round(rec_tm * 1000)))
 
 		# Show that slow mode is on, if it's on
 		if slow_mode:
@@ -164,55 +169,74 @@ try:
 
 			rec_tm = time.time()
 
-			# Get the locations of all faces and their locations
-			# Upsample it once
-			face_locations = face_detector(frame, 1)
+			# Set detector input size to match frame
+			face_detector.setInputSize((width, height))
+
+			# Detect faces using YuNet (needs BGR input, convert from grayscale)
+			bgr_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+			retval, face_locations = face_detector.detect(bgr_frame)
 			rec_tm = time.time() - rec_tm
 
 			# Loop though all faces and paint a circle around them
-			for loc in face_locations:
-				if use_cnn:
-					loc = loc.rect
+			if face_locations is not None:
+				for face in face_locations:
+					# By default the circle around the face is red for no match
+					color = (0, 0, 230)
 
-				# By default the circle around the face is red for no match
-				color = (0, 0, 230)
+					# Get bounding box
+					fx, fy, fw, fh = int(face[0]), int(face[1]), int(face[2]), int(face[3])
 
-				# Get the center X and Y from the rectangular points
-				x = int((loc.right() - loc.left()) / 2) + loc.left()
-				y = int((loc.bottom() - loc.top()) / 2) + loc.top()
+					# Get the center X and Y from the bounding box
+					x = fx + fw // 2
+					y = fy + fh // 2
 
-				# Get the raduis from the with of the square
-				r = (loc.right() - loc.left()) / 2
-				# Add 20% padding
-				r = int(r + (r * 0.2))
+					# Get the radius from the width of the bounding box
+					r = fw // 2
+					# Add 20% padding
+					r = int(r + (r * 0.2))
 
-				# If we have models defined for the current user
-				if models:
-					# Get the encoding of the face in the frame
-					face_landmark = pose_predictor(orig_frame, loc)
-					face_encoding = np.array(face_encoder.compute_face_descriptor(orig_frame, face_landmark, 1))
+					# If we have models defined for the current user
+					if models and encodings:
+						# Align and crop face, get encoding
+						aligned_face = face_recognizer.alignCrop(orig_frame, face)
+						face_encoding = face_recognizer.feature(aligned_face)
 
-					# Match this found face against a known face
-					matches = np.linalg.norm(encodings - face_encoding, axis=1)
+						# Match against each stored encoding
+						best_match_similarity = 0
+						best_match_index = 0
+						enc_count = 0
+						for enc_idx, stored_enc in enumerate(encodings):
+							similarity = face_recognizer.match(
+								face_encoding, stored_enc.reshape(1, -1),
+								cv2.FaceRecognizerSF_FR_COSINE
+							)
+							if similarity > best_match_similarity:
+								best_match_similarity = similarity
+								best_match_index = enc_idx
 
-					# Get best match
-					match_index = np.argmin(matches)
-					match = matches[match_index]
+						# Determine which model this belongs to
+						match_model_index = 0
+						running_count = 0
+						for mi, model in enumerate(models):
+							running_count += len(model["data"])
+							if best_match_index < running_count:
+								match_model_index = mi
+								break
 
-					# If a model matches
-					if 0 < match < video_certainty:
-						# Turn the circle green
-						color = (0, 230, 0)
+						# If a model matches
+						if best_match_similarity >= video_certainty:
+							# Turn the circle green
+							color = (0, 230, 0)
 
-						# Print the name of the model next to the circle
-						circle_text = "{} (certainty: {})".format(models[match_index]["label"], round(match * 10, 3))
-						cv2.putText(overlay, circle_text, (int(x + r / 3), y - r), cv2.FONT_HERSHEY_SIMPLEX, .3, (0, 255, 0), 0, cv2.LINE_AA)
-					# If no approved matches, show red text
-					else:
-						cv2.putText(overlay, "no match", (int(x + r / 3), y - r), cv2.FONT_HERSHEY_SIMPLEX, .3, (0, 0, 255), 0, cv2.LINE_AA)
+							# Print the name of the model next to the circle
+							circle_text = "{} (similarity: {})".format(models[match_model_index]["label"], round(best_match_similarity, 3))
+							cv2.putText(overlay, circle_text, (int(x + r / 3), y - r), cv2.FONT_HERSHEY_SIMPLEX, .3, (0, 255, 0), 0, cv2.LINE_AA)
+						# If no approved matches, show red text
+						else:
+							cv2.putText(overlay, "no match", (int(x + r / 3), y - r), cv2.FONT_HERSHEY_SIMPLEX, .3, (0, 0, 255), 0, cv2.LINE_AA)
 
-				# Draw the Circle in green
-				cv2.circle(overlay, (x, y), r, color, 2)
+					# Draw the Circle in green
+					cv2.circle(overlay, (x, y), r, color, 2)
 
 		# Add the overlay to the frame with some transparency
 		alpha = 0.65

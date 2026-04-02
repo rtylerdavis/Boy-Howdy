@@ -1,4 +1,5 @@
 import time
+import cv2
 
 from i18n import _
 
@@ -35,25 +36,42 @@ class nod(RubberStamp):
 			# Apply CLAHE to get a better picture
 			frame = self.clahe.apply(frame)
 
+			# YuNet needs BGR input
+			bgr_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+
+			# Set detector input size to match frame
+			h, w = bgr_frame.shape[:2]
+			self.face_detector.setInputSize((w, h))
+
 			# Detect all faces in the frame
-			face_locations = self.face_detector(frame, 1)
+			retval, faces = self.face_detector.detect(bgr_frame)
 
 			# Only continue if exactly 1 face is visible in the frame
-			if len(face_locations) != 1:
+			if faces is None or len(faces) != 1:
 				continue
 
+			face = faces[0]
+
+			# YuNet detection output format (15 values per face):
+			# [x, y, w, h, right_eye_x, right_eye_y, left_eye_x, left_eye_y,
+			#  nose_tip_x, nose_tip_y, right_mouth_x, right_mouth_y,
+			#  left_mouth_x, left_mouth_y, score]
+
 			# Get the position of the eyes and tip of the nose
-			face_landmarks = self.pose_predictor(frame, face_locations[0])
+			right_eye_x = face[4]
+			left_eye_x = face[6]
+			nose_x = face[8]
+			nose_y = face[9]
 
 			# Calculate the relative distance between the 2 eyes
-			reldist = face_landmarks.part(0).x - face_landmarks.part(2).x
+			reldist = right_eye_x - left_eye_x
 			# Average this out with the distance found in the last frame to smooth it out
 			avg_reldist = (last_reldist + reldist) / 2
 
 			# Calculate horizontal movement (shaking head) and vertical movement (nodding)
 			for axis in ["x", "y"]:
 				# Get the location of the nose on the active axis
-				nosepoint = getattr(face_landmarks.part(4), axis)
+				nosepoint = nose_x if axis == "x" else nose_y
 
 				# If this is the first frame set the previous values to the current ones
 				if last_nosepoint[axis] == -1:

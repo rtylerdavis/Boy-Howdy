@@ -15,15 +15,19 @@ require {
     type local_login_t;
     type v4l_device_t;
     type event_device_t;
-    class chr_file { open read write ioctl getattr };
+    type lib_t;
+    class chr_file { open read write ioctl getattr map };
+    class dir { add_name write };
+    class file { create write };
 }
 
 # ---- Camera access (V4L2) ----
 # The PAM module spawns a Python process that opens /dev/video* to capture
 # frames for face detection/recognition via OpenCV.
+# "map" is needed because OpenCV mmap()s the video device buffer.
 
-allow xdm_t v4l_device_t:chr_file { open read write ioctl getattr };
-allow local_login_t v4l_device_t:chr_file { open read write ioctl getattr };
+allow xdm_t v4l_device_t:chr_file { open read write ioctl getattr map };
+allow local_login_t v4l_device_t:chr_file { open read write ioctl getattr map };
 
 # ---- uinput access ----
 # When the "input" workaround is enabled (default), the PAM module creates
@@ -32,3 +36,10 @@ allow local_login_t v4l_device_t:chr_file { open read write ioctl getattr };
 
 allow xdm_t event_device_t:chr_file { open read write ioctl getattr };
 allow local_login_t event_device_t:chr_file { open read write ioctl getattr };
+
+# ---- Python __pycache__ ----
+# Python 3 writes bytecode cache files to __pycache__/ directories next to
+# the .py source files. The howdy sources are installed to lib_t directories.
+
+allow xdm_t lib_t:dir { add_name write };
+allow xdm_t lib_t:file { create write };

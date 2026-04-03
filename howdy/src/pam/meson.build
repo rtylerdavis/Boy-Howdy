@@ -1,4 +1,4 @@
-inih_cpp = dependency('INIReader', fallback: ['inih', 'INIReader_dep'])
+inih_cpp = dependency('INIReader')
 libevdev = dependency('libevdev')
 libpam = meson.get_compiler('cpp').find_library('pam')
 threads = dependency('threads')

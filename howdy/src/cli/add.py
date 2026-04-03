@@ -56,10 +56,12 @@ enc_file = paths_factory.user_model_path(user)
 # Known encodings
 encodings = []
 
-# Make the ./models folder if it doesn't already exist (mode 700: root-only)
+# Make the ./models folder if it doesn't already exist
+# Mode 711: traversable by all (so lock screen greeters running as the user
+# can stat their own model file), but not listable by non-root.
 if not os.path.exists(paths_factory.user_models_dir_path()):
 	print(_("No face model folder found, creating one"))
-	os.makedirs(paths_factory.user_models_dir_path(), mode=0o700)
+	os.makedirs(paths_factory.user_models_dir_path(), mode=0o711)
 
 # To try read a premade encodings file if it exists
 try:
@@ -211,8 +213,14 @@ insert_model["data"].append(face_encoding.flatten().tolist())
 # Insert full object into the list
 encodings.append(insert_model)
 
-# Save the new encodings to disk (mode 600: biometric data, root-only)
+# Save the new encodings to disk, owned by the target user.
+# Mode 600: only the user (and root) can read their own face model.
+# Ownership is set to the enrolling user so non-root PAM consumers
+# (e.g. kscreenlocker_greet) can read the model at the lock screen.
+import pwd
+pw = pwd.getpwnam(user)
 fd = os.open(enc_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+os.fchown(fd, pw.pw_uid, pw.pw_gid)
 with os.fdopen(fd, "w") as datafile:
 	json.dump(encodings, datafile)
 

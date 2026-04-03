@@ -14,7 +14,7 @@ Tracking all changes made to modernize the fork from boltgolt/howdy.
 
 ### Fedora-Specific
 - [x] **Add authselect support** — `howdy-authselect` script with enable/disable/status. Creates custom profile based on user's current one.
-- [x] **Ship an SELinux policy module** — Type enforcement policy granting `xdm_t`/`login_t` access to `v4l_device_t` and `event_device_t`.
+- [x] **Ship an SELinux policy module** — Type enforcement policy granting `xdm_t`/`local_login_t` access to `v4l_device_t` and `event_device_t`.
 - [x] **Create an RPM spec file** — Full spec with SELinux subpackage, GTK subpackage, proper deps and scriptlets.
 - [x] **Python 3.13/3.14 compatibility** — Fixed deprecated `datetime.utcnow()`, invalid escape sequences, deprecated `SourceFileLoader.load_module()`.
 
@@ -172,9 +172,9 @@ Works with any base profile (local, sssd, winbind) and preserves all existing fe
 
 Type enforcement policy allowing:
 - `xdm_t` (GDM/SDDM) → `v4l_device_t` (camera): `open read write ioctl getattr`
-- `login_t` (console) → `v4l_device_t` (camera): same
+- `local_login_t` (console) → `v4l_device_t` (camera): same
 - `xdm_t` → `event_device_t` (enter workaround): same
-- `login_t` → `event_device_t` (enter workaround): same
+- `local_login_t` → `event_device_t` (enter workaround): same
 
 No custom file contexts needed — howdy files use standard system types (`lib_t`, `etc_t`).
 

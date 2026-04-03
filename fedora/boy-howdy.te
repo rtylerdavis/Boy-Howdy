@@ -12,7 +12,7 @@ policy_module(boy-howdy, 4.0.0)
 
 require {
     type xdm_t;
-    type login_t;
+    type local_login_t;
     type v4l_device_t;
     type event_device_t;
     class chr_file { open read write ioctl getattr };
@@ -23,7 +23,7 @@ require {
 # frames for face detection/recognition via OpenCV.
 
 allow xdm_t v4l_device_t:chr_file { open read write ioctl getattr };
-allow login_t v4l_device_t:chr_file { open read write ioctl getattr };
+allow local_login_t v4l_device_t:chr_file { open read write ioctl getattr };
 
 # ---- uinput access ----
 # When the "input" workaround is enabled (default), the PAM module creates
@@ -31,4 +31,4 @@ allow login_t v4l_device_t:chr_file { open read write ioctl getattr };
 # dismisses the password prompt after a successful face match.
 
 allow xdm_t event_device_t:chr_file { open read write ioctl getattr };
-allow login_t event_device_t:chr_file { open read write ioctl getattr };
+allow local_login_t event_device_t:chr_file { open read write ioctl getattr };

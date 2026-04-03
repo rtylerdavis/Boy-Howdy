@@ -44,12 +44,12 @@ check_authselect() {
 
 # Get the current profile ID (e.g. "local", "sssd", "custom/boy-howdy")
 get_current_profile() {
-    authselect current -r 2>/dev/null | head -1
+    authselect current -r 2>/dev/null | awk '{print $1}'
 }
 
 # Get the currently enabled features as a space-separated list
 get_current_features() {
-    authselect current 2>/dev/null | grep "^- " | sed 's/^- //' | tr '\n' ' '
+    authselect current -r 2>/dev/null | cut -d' ' -sf2-
 }
 
 inject_howdy_line() {

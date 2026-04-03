@@ -14,7 +14,7 @@ require {
     type xdm_t;
     type login_t;
     type v4l_device_t;
-    type uinput_device_t;
+    type event_device_t;
     class chr_file { open read write ioctl getattr };
 }
 
@@ -30,5 +30,5 @@ allow login_t v4l_device_t:chr_file { open read write ioctl getattr };
 # a virtual input device via /dev/uinput to send an Enter keypress that
 # dismisses the password prompt after a successful face match.
 
-allow xdm_t uinput_device_t:chr_file { open read write ioctl getattr };
-allow login_t uinput_device_t:chr_file { open read write ioctl getattr };
+allow xdm_t event_device_t:chr_file { open read write ioctl getattr };
+allow login_t event_device_t:chr_file { open read write ioctl getattr };

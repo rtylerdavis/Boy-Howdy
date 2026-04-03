@@ -113,6 +113,14 @@ endif
 
 install_data('model-data/install.sh', install_dir: modeldatadir, install_mode: 'rwxr-xr-x')
 
+# Install systemd-sleep hook so pam_howdy can detect recent resume from suspend
+install_data(
+    'systemd-sleep/howdy-resume',
+    install_dir: '/usr/lib/systemd/system-sleep',
+    install_mode: 'rwxr-xr-x',
+    install_tag: 'pam_module',
+)
+
 install_man('../howdy.1')
 
 # Install Fedora integration scripts

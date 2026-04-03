@@ -1,0 +1,11 @@
+#!/bin/sh
+# Called by systemd-suspend.service (via /usr/lib/systemd/system-sleep/)
+# on suspend and resume. Writes a timestamp so pam_howdy can delay face
+# auth until the display has had time to power on after resume.
+
+case "$1" in
+    post)
+        # System just woke up — record the time (epoch seconds)
+        date +%s > /run/howdy-resume-timestamp
+        ;;
+esac

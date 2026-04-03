@@ -156,7 +156,9 @@ auto check_enabled(const INIReader &config, const char *username) -> int {
     int return_value =
         glob("/proc/acpi/button/lid/*/state", 0, nullptr, &glob_result);
 
-    if (return_value != 0) {
+    if (return_value == GLOB_NOMATCH) {
+      // No lid device found — this is normal on desktops, nothing to do
+    } else if (return_value != 0) {
       syslog(LOG_ERR, "Failed to read files from glob: %d", return_value);
       if (errno != 0) {
         syslog(LOG_ERR, "Underlying error: %s (%d)", strerror(errno), errno);
@@ -224,6 +226,37 @@ auto identify(pam_handle_t *pamh, int flags, int argc, const char **argv,
   pam_res = check_enabled(config, username);
   if (pam_res != PAM_SUCCESS) {
     return pam_res;
+  }
+
+  // If the system just resumed from suspend, wait for the display to power on.
+  // Without this delay, the display manager starts a PAM conversation before the
+  // screen is on — howdy fires, fails or succeeds into a stale PAM session, and
+  // the user ends up on a lock screen where nothing works.
+  auto resume_delay = config.GetInteger("core", "resume_delay", 3);
+  if (resume_delay > 0) {
+    std::ifstream ts_file("/run/howdy-resume-timestamp");
+    if (ts_file.is_open()) {
+      long resume_epoch = 0;
+      ts_file >> resume_epoch;
+      ts_file.close();
+
+      if (resume_epoch > 0) {
+        auto now = std::chrono::system_clock::now();
+        auto resume_time = std::chrono::system_clock::from_time_t(resume_epoch);
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+            now - resume_time);
+
+        if (elapsed.count() >= 0 && elapsed.count() < resume_delay) {
+          auto remaining =
+              static_cast<unsigned>(resume_delay - elapsed.count());
+          syslog(LOG_INFO,
+                 "System resumed from suspend %lds ago, waiting %us for "
+                 "display",
+                 elapsed.count(), remaining);
+          sleep(remaining);
+        }
+      }
+    }
   }
 
   Workaround workaround =

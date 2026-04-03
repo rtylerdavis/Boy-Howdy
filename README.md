@@ -26,17 +26,19 @@ This is a fresh fork, not a drop-in upgrade from howdy. Expect breaking changes.
 - [x] Fixed ambiguous `/usr/bin/python` default to `/usr/bin/python3`
 - [x] Updated model download script with SHA256 checksum verification
 - [x] Modernized string formatting across codebase
+- [x] Fixed Python path discovery in PAM context (PAM strips environment variables)
+- [x] Fixed PAM module install path mismatch (`/usr/local/lib64/` vs `/usr/lib64/`)
+- [x] Added authselect support for Fedora PAM management
+- [x] Shipped SELinux policy module for camera access during auth
+- [x] Created RPM spec file for Fedora packaging
+- [x] Added proper Python packaging (pyproject.toml)
+- [x] Fixed face model file permissions (644 → 600)
+- [x] Fixed PAM return codes (PAM_IGNORE vs PAM_SUCCESS)
+- [x] Safe upgrade path handling for stale v2.x PAM entries
+- [x] Suspend/resume grace period — delays face auth after resume so the display can power on
+- [x] Fixed noisy lid-detection errors on desktops (GLOB_NOMATCH no longer logged as error)
 
 ### To Do
-- [ ] Fix Python path discovery in PAM context (PAM strips environment variables)
-- [ ] Fix PAM module install path mismatch (`/usr/local/lib64/` vs `/usr/lib64/`)
-- [ ] Add authselect support for Fedora PAM management
-- [ ] Ship SELinux policy module for camera access during auth
-- [ ] Create RPM spec file for Fedora packaging
-- [ ] Add proper Python packaging (pyproject.toml)
-- [ ] Fix face model file permissions (644 → 600)
-- [ ] Fix PAM return codes (PAM_IGNORE vs PAM_SUCCESS)
-- [ ] Handle stale v2.x PAM entries that can lock users out
 - [ ] Intel IPU6 / libcamera camera support
 - [ ] IR emitter detection and management
 

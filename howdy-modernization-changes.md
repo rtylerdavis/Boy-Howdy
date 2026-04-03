@@ -25,6 +25,10 @@ Tracking all changes made to modernize the fork from boltgolt/howdy.
 - [x] **Clean up build system** — Fixed `python_path` default, added Python >= 3.12 check, removed dead dlib fetch code.
 - [x] **Safe upgrade path from v2.x (#1091)** — `howdy-upgrade-check` script detects/fixes stale pam_python.so entries, old dlib files, dead symlinks. Runs in RPM %pretrans.
 
+### Suspend/Resume
+- [x] **Suspend/resume grace period** — Delays face auth after resume so the display manager has time to power on the screen and stabilize its PAM session.
+- [x] **Lid detection noise fix** — `GLOB_NOMATCH` on desktops (no lid) no longer logged as an error on every auth attempt.
+
 ### Nice-to-Have / Future
 - [ ] **Intel IPU6 / libcamera support** — Many modern Intel laptops use MIPI cameras that don't work with V4L2/OpenCV.
 - [ ] **IR emitter management** — Integrate or detect `linux-enable-ir-emitter`.
@@ -235,3 +239,28 @@ Dry run by default; `--fix` flag applies changes. Wired into RPM spec as `%pretr
 Declares project metadata, Python version constraint (`>=3.12`), and runtime dependencies (`numpy`, `opencv-python>=4.5.4`). Optional GTK dependencies in `[project.optional-dependencies]`.
 
 Meson remains the build system — this file is for tooling (dependabot, IDE support, etc.), not pip installation.
+
+---
+
+## Suspend/Resume Fix (2026-04-02)
+
+### Problem
+After the system resumes from suspend, the display manager (KDE kscreenlocker, GDM, etc.) starts a PAM authentication conversation before the display has powered on. pam_howdy fires immediately — the IR camera activates, attempts face recognition, and either succeeds or fails into a PAM session that the display manager then kills or abandons when it reinitializes its lock screen UI for the now-on display. The result: the user sees a lock screen where neither face auth nor password input works. "Switch user" is the only workaround (spawns a fresh greeter with a new PAM conversation).
+
+Evidence from syslog: failed post-resume attempts log the `check_enabled` phase but never log any outcome (no success, no timeout, no error) — the PAM process was killed mid-flight by the display manager.
+
+### Fix: Resume grace period
+**Files:** `howdy/src/pam/main.cc`, `howdy/src/config.ini`, `howdy/src/systemd-sleep/howdy-resume`, `howdy/src/meson.build`
+
+Two-part solution:
+
+1. **systemd-sleep hook** (`/usr/lib/systemd/system-sleep/howdy-resume`) — Called by systemd on suspend/resume. On resume (`post`), writes the current epoch timestamp to `/run/howdy-resume-timestamp`.
+
+2. **PAM module delay** — After `check_enabled()` passes, reads the timestamp file. If the system resumed within `resume_delay` seconds (default: 3), sleeps for the remaining time before attempting face auth. This gives the display enough time to power on and the display manager enough time to stabilize its lock screen session.
+
+Configurable via `resume_delay` in `[core]` config section. Set to `0` to disable.
+
+### Fix: Lid detection noise on desktops
+**File:** `howdy/src/pam/main.cc`
+
+The lid-closed detection globs `/proc/acpi/button/lid/*/state`. On desktops (no lid), this returns `GLOB_NOMATCH`, which was logged as an error on every single authentication attempt. Now `GLOB_NOMATCH` is handled silently — only actual glob failures are logged.

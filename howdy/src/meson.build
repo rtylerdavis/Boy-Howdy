@@ -115,6 +115,15 @@ install_data('model-data/install.sh', install_dir: modeldatadir, install_mode: '
 
 install_man('../howdy.1')
 
+# Install Fedora integration scripts
+install_data(
+    '../../fedora/howdy-authselect',
+    '../../fedora/howdy-upgrade-check',
+    install_dir: get_option('prefix') / get_option('sbindir'),
+    install_mode: 'rwxr-xr-x',
+    install_tag: 'bin',
+)
+
 cli_path = join_paths(pysourcesinstalldir, 'cli.py')
 conf_data = configuration_data({ 'script_path': cli_path, 'python_path': py.full_path() })
 
